@@ -16,11 +16,10 @@ class FieldCreator():
         self.tet_S = np.array([[1,0],[1,1],[0,1]])
         self.tet_T = np.array([[1,0],[1,1],[1,0]])
         self.tet_list = [self.tet_I, self.tet_L, self.tet_S, self.tet_T]
-        
-        self.display.fill(WHITE)
 
     def createField(self, coverage, map_size):
-        self.field = 255*np.ones((map_size,map_size),dtype=np.float32)
+        self.display.fill(WHITE)
+        self.field = np.zeros((map_size,map_size),dtype=np.uint8)
         cell_size = int(self.display.get_width()/map_size)
         self.placed = 0
         while self.placed < coverage*(map_size**2):
@@ -28,7 +27,8 @@ class FieldCreator():
             loc = (np.random.randint(map_size),np.random.randint(map_size))
             
             self.place_tet(shape_type, loc, map_size, cell_size)
-            if self.view: pygame.display.flip()
+            if self.view: 
+                pygame.display.flip()
         return self.field
         
     def place_tet(self, shape_type, loc, map_size, cell_size):
@@ -38,8 +38,8 @@ class FieldCreator():
         tet = np.rot90(tet, rot)
 
         for idx, val in np.ndenumerate(tet):
-            if val and loc[0]+idx[0]<=map_size and loc[1]+idx[1]<=map_size:
-                cv2.rectangle(self.field, (loc[1]+idx[1], loc[0]+idx[0]), (loc[1]+idx[1], loc[0]+idx[0]), BLACK, -1)
+            if val and loc[0]+idx[0]<map_size and loc[1]+idx[1]<map_size:
+                cv2.rectangle(self.field, (loc[1]+idx[1], loc[0]+idx[0]), (loc[1]+idx[1], loc[0]+idx[0]), 255, -1)
                 pygame.draw.rect(self.display, BLACK, pygame.Rect((loc[1]+idx[1])*cell_size, (loc[0]+idx[0])*cell_size, cell_size, cell_size))
                 self.placed += 1
 
