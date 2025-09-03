@@ -27,12 +27,12 @@ def get_path(field, goal_loc, start_loc):
                     frontier.put((priority,next_node))
                     came_from[next_node] = curr_node
     
-    raise Exception("No Path Found")
+    raise ValueError("No Path Found")
 
 def format_path(came_from, goal_loc):
     path = []
     node = goal_loc
-    while node is not None:
-        path.insert(0,node)
+    while came_from[node] is not None:
+        path.append(node)
         node = came_from[node]
     return path
