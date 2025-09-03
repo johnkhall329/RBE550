@@ -41,8 +41,9 @@ class Sprite(pygame.sprite.Sprite):
                 for enemy in sprites:
                     if enemy.active:
                         enemy_dist = min(enemy_dist, (abs(enemy.map_loc[0]-self.map_loc[0]) + abs(enemy.map_loc[1]-self.map_loc[1])))
-                if enemy_dist <= 5:
-                    next_node = self.path_find(field,new_loc=True)
+                if enemy_dist <= 3:
+                    self.path_find(field,new_loc=True)
+                    next_node = self.path.pop()
                 elif enemy_dist <= 10 or field[next_node] == 255:            
                     self.path_find(field)
                     next_node = self.path.pop()
@@ -61,14 +62,7 @@ class Sprite(pygame.sprite.Sprite):
                 if abs(x_dist) >= abs(y_dist): new_loc = (self.map_loc[0], self.map_loc[1] + np.sign(x_dist))
                 else: new_loc = (self.map_loc[0] + np.sign(y_dist), self.map_loc[1])
                 if field[new_loc] == 255:
-                    pygame.draw.rect(self.image,(0,0,0),pygame.Rect(0,0,SIZE,SIZE))
-                    self.active = False
-                    field[self.map_loc] = 255
-                    for idx, weight in np.ndenumerate(self.kernel):
-                        idx = (idx[0]-2,idx[1]-2)
-                        if self.map_loc[0]+idx[0]<MAP and self.map_loc[1]+idx[1]<MAP:
-                            if field[self.map_loc[0]+idx[0],self.map_loc[1]+idx[1]] not in [1,255]:
-                                field[self.map_loc[0]+idx[0],self.map_loc[1]+idx[1]] -= weight
+                    field = self.teardown(field)
                 else:
                     for idx, weight in np.ndenumerate(self.kernel):
                         idx = (idx[0]-2,idx[1]-2)
@@ -83,25 +77,34 @@ class Sprite(pygame.sprite.Sprite):
                     self.screen_loc = (self.map_loc[1]*SIZE, self.map_loc[0]*SIZE)
                     self.rect.topleft=self.screen_loc
             return field
-            
+    
+    def teardown(self,field):
+        pygame.draw.rect(self.image,(0,0,0),pygame.Rect(0,0,SIZE,SIZE))
+        self.active = False
+        field[self.map_loc] = 255
+        for idx, weight in np.ndenumerate(self.kernel):
+            idx = (idx[0]-2,idx[1]-2)
+            if self.map_loc[0]+idx[0]<MAP and self.map_loc[1]+idx[1]<MAP:
+                if field[self.map_loc[0]+idx[0],self.map_loc[1]+idx[1]] not in [1,255]:
+                    field[self.map_loc[0]+idx[0],self.map_loc[1]+idx[1]] -= weight
+        return field
+
     def path_find(self, field, goal_loc=None, curr_loc=None, new_loc=False):
         try:
             if new_loc:
                 while True:
-                    if self.teleports >= 5: raise pygame.error("FAILED")
+                    if self.teleports >= 5: break
                     loc = np.random.randint(64,size=2)
-                    if not field[loc[0],loc[1]]:
+                    if field[loc[0],loc[1]] not in [1,255]:
                         curr_loc = tuple(loc)
                         self.teleports += 1
                         break
-                    self.teleports += 1
             if not goal_loc: goal_loc = self.goal_loc
             if not curr_loc: curr_loc = self.map_loc
             self.path = get_path(field, goal_loc, curr_loc)
-            return curr_loc
         except ValueError as e:
-            print(e)
-            return self.path_find(field,goal_loc,True)
+            if self.teleports >= 5: raise(e)
+            self.path_find(field,goal_loc,True)
     
     def draw_path(self,curr_loc):
         surface = pygame.Surface((MAP*SIZE,MAP*SIZE), pygame.SRCALPHA)
@@ -133,12 +136,25 @@ def place_obj(obj,field, display:pygame.Surface = None):
                             new_field[loc[0]+idx[0],loc[1]+idx[1]] += weight
                             if new_field[loc[0]+idx[0],loc[1]+idx[1]] > 255: new_field[loc[0]+idx[0],loc[1]+idx[1]] = 255
             return new_field, sprite
+
+def put_text(win, display_surface):
+    font = pygame.font.Font(pygame.font.match_font('microsoftsansserif'),32)
+    if win:
+        text = font.render('YOU WIN!', True, (0,0,0), (0,255,0))
+    else:
+        text = font.render('GAME OVER!', True, (0,0,0), (255,0,0))
+    textRect = text.get_rect()
+    textRect.center = (MAP*SIZE/2, MAP*SIZE/2)
+    print("YOU WON!")
+    display_surface.blit(text,textRect)
+    for i in range(20):
+        pygame.display.flip()
+        time.sleep(0.1)
     
 def main():
     pygame.init()
-
     display_surface = pygame.display.set_mode((MAP*SIZE, MAP*SIZE))
-    game_surface = pygame.Surface((640,640),pygame.SRCALPHA)
+    game_surface = pygame.Surface((MAP*SIZE,MAP*SIZE),pygame.SRCALPHA)
     fc = FieldCreator(game_surface, False)
     field = fc.createField(0.2, 64)
     running = True
@@ -148,14 +164,15 @@ def main():
     game_field, hero = place_obj('hero', goal_field)
     hero.goal_loc = goal_loc
     hero_group.add(hero)
-    cv2.namedWindow('field', cv2.WINDOW_NORMAL)
-    cv2.resizeWindow('field', 720,720)
+    # cv2.namedWindow('field', cv2.WINDOW_NORMAL)
+    # cv2.resizeWindow('field', 640,640)
     
     for i in range(10):
         game_field, enemy = place_obj('enemy', game_field)
         enemy_list.add(enemy)
 
-    hero_loc = hero.path_find(game_field)
+    hero.path_find(game_field)
+    hero_loc = hero.map_loc
     path_surface = hero.draw_path(hero_loc)
     while running:
         for event in pygame.event.get():
@@ -164,20 +181,34 @@ def main():
         try:
             path_surface = hero.update(enemy_list,game_field)
             display_surface.blits([(game_surface,(0,0)),(path_surface,(0,0))])
-            # game_field = goal_field.copy()
             for enemy in enemy_list:
                 game_field = enemy.update(hero_group,game_field)
+            collisions = pygame.sprite.groupcollide(enemy_list, enemy_list, False, False)
+            for sprite1, collided in collisions.items():
+                for sprite2 in collided:
+                    if sprite1 != sprite2:
+                        game_field=sprite1.teardown(game_field)
+                        game_field=sprite2.teardown(game_field)
             hero_group.draw(display_surface)
             enemy_list.draw(display_surface)
-        except TimeoutError as e:
+            if pygame.sprite.groupcollide(hero_group, enemy_list, False, False):
+                print("Game Over")
+                put_text(False,display_surface)
+                running=False
+            if hero.map_loc == goal_loc: 
+                put_text(True,display_surface)
+                running=False
+                
+        except ValueError as e:
             print(e)
+            put_text(False,display_surface)
             running=False
         
-        cv2.imshow('field', game_field)
-        cv2.waitKey(1)
+        # cv2.imshow('field', game_field)
+        # cv2.waitKey(1)
         
         pygame.display.flip()
-        time.sleep(0.5)
+        time.sleep(0.25)
 
     pygame.quit()
     sys.exit()
