@@ -103,8 +103,10 @@ class Sprite(pygame.sprite.Sprite):
             if not curr_loc: curr_loc = self.map_loc
             self.path = get_path(field, goal_loc, curr_loc)
         except ValueError as e:
-            if self.teleports >= 5: raise(e)
-            self.path_find(field,goal_loc,True)
+            if self.teleports >= 5: 
+                raise(e)
+            print(self.teleports)
+            self.path_find(field,goal_loc,new_loc=True)
     
     def draw_path(self,curr_loc):
         surface = pygame.Surface((MAP*SIZE,MAP*SIZE), pygame.SRCALPHA)
@@ -172,8 +174,13 @@ def main():
         enemy_list.add(enemy)
 
     hero.path_find(game_field)
+    time.sleep(0.25)
     hero_loc = hero.map_loc
     path_surface = hero.draw_path(hero_loc)
+    display_surface.blits([(game_surface,(0,0)),(path_surface,(0,0))])
+    hero_group.draw(display_surface)
+    enemy_list.draw(display_surface)
+    pygame.display.flip()
     while running:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
