@@ -104,7 +104,7 @@ class Sprite(pygame.sprite.Sprite):
             self.path = get_path(field, goal_loc, curr_loc)
         except ValueError as e:
             if self.teleports >= 5: raise(e)
-            self.path_find(field,goal_loc,True)
+            self.path_find(field,goal_loc,curr_loc=True)
     
     def draw_path(self,curr_loc):
         surface = pygame.Surface((MAP*SIZE,MAP*SIZE), pygame.SRCALPHA)
