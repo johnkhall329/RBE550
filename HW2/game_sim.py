@@ -79,7 +79,7 @@ class Sprite(pygame.sprite.Sprite):
             return field
     
     def teardown(self,field):
-        pygame.draw.rect(self.image,(0,0,0),pygame.Rect(0,0,SIZE,SIZE))
+        pygame.draw.rect(self.image,(75,75,75),pygame.Rect(0,0,SIZE,SIZE))
         self.active = False
         field[self.map_loc] = 255
         for idx, weight in np.ndenumerate(self.kernel):
@@ -174,6 +174,10 @@ def main():
     hero.path_find(game_field)
     hero_loc = hero.map_loc
     path_surface = hero.draw_path(hero_loc)
+    display_surface.blits([(game_surface,(0,0)),(path_surface,(0,0))])
+    hero_group.draw(display_surface)
+    enemy_list.draw(display_surface)
+    pygame.display.flip()
     while running:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
