@@ -22,6 +22,7 @@ class Sprite(pygame.sprite.Sprite):
         if role == "hero":
             pygame.draw.circle(self.image,(0,0,255),(0.5*SIZE,0.5*SIZE), 4,0)
         elif role == "enemy":
+            # weighted kernel to disuade path planner
             self.kernel = np.array([[  0,  25,  50,  25,   0],
                                     [ 25, 50, 75, 50,  25],
                                     [ 50, 75, 100, 75,  50],
@@ -38,17 +39,17 @@ class Sprite(pygame.sprite.Sprite):
             if len(self.path) > 0:
                 next_node = self.path.pop()
                 enemy_dist = 500
-                for enemy in sprites:
+                for enemy in sprites: # search enemies and find closest Manhattan distance
                     if enemy.active:
                         enemy_dist = min(enemy_dist, (abs(enemy.map_loc[0]-self.map_loc[0]) + abs(enemy.map_loc[1]-self.map_loc[1])))
                 if enemy_dist <= 3:
-                    self.path_find(field,new_loc=True)
+                    self.path_find(field,new_loc=True) # Teleport if too close
                     next_node = self.path.pop()
-                elif enemy_dist <= 10 or field[next_node] == 255:            
+                elif enemy_dist <= 10 or field[next_node] == 255: # Replan if nearby          
                     self.path_find(field)
                     next_node = self.path.pop()
                 surface = self.draw_path(next_node)
-                self.map_loc = next_node
+                self.map_loc = next_node 
                 self.screen_loc = (self.map_loc[1]*SIZE, self.map_loc[0]*SIZE)
                 self.rect.topleft=self.screen_loc
             else: surface = pygame.Surface((MAP*SIZE,MAP*SIZE), pygame.SRCALPHA)
@@ -57,13 +58,14 @@ class Sprite(pygame.sprite.Sprite):
         elif self.role == 'enemy':
             if self.active:
                 hero = sprites.sprites()[0]
-                x_dist = hero.rect.x - self.rect.x
-                y_dist = hero.rect.y - self.rect.y
+                # find which direction to move in based on hero location
+                x_dist = hero.map_loc[1] - self.map_loc[1]
+                y_dist = hero.map_loc[0] - self.map_loc[0]
                 if abs(x_dist) >= abs(y_dist): new_loc = (self.map_loc[0], self.map_loc[1] + np.sign(x_dist))
                 else: new_loc = (self.map_loc[0] + np.sign(y_dist), self.map_loc[1])
-                if field[new_loc] == 255:
+                if field[new_loc] == 255: # if it will run into wall, tear down
                     field = self.teardown(field)
-                else:
+                else: # moves the kernel from previous location to current location
                     for idx, weight in np.ndenumerate(self.kernel):
                         idx = (idx[0]-2,idx[1]-2)
                         if self.map_loc[0]+idx[0]<MAP and self.map_loc[1]+idx[1]<MAP:
@@ -79,6 +81,7 @@ class Sprite(pygame.sprite.Sprite):
             return field
     
     def teardown(self,field):
+        # draws grey rectangle and places wall in field
         pygame.draw.rect(self.image,(75,75,75),pygame.Rect(0,0,SIZE,SIZE))
         self.active = False
         field[self.map_loc] = 255
@@ -93,6 +96,7 @@ class Sprite(pygame.sprite.Sprite):
         try:
             if new_loc:
                 while True:
+                    # will try and find new location if teleports are available
                     if self.teleports >= 5: break
                     loc = np.random.randint(64,size=2)
                     if field[loc[0],loc[1]] not in [1,255]:
@@ -103,10 +107,12 @@ class Sprite(pygame.sprite.Sprite):
             if not curr_loc: curr_loc = self.map_loc
             self.path = get_path(field, goal_loc, curr_loc)
         except ValueError as e:
+            # if no valide path, teleport and retry if possible
             if self.teleports >= 5: raise(e)
             self.path_find(field,goal_loc,curr_loc=True)
     
     def draw_path(self,curr_loc):
+        # draws the current path of the hero
         surface = pygame.Surface((MAP*SIZE,MAP*SIZE), pygame.SRCALPHA)
         prev_node = self.goal_loc
         for i in range(len(self.path)):
@@ -117,6 +123,7 @@ class Sprite(pygame.sprite.Sprite):
         return surface
 
 def place_obj(obj,field, display:pygame.Surface = None):
+    # places the goal, hero, and enemy on the field.
     new_field = np.copy(field)
     while True:
         loc = np.random.randint(MAP,size=2)
@@ -130,7 +137,7 @@ def place_obj(obj,field, display:pygame.Surface = None):
             else:
                 sprite = Sprite("enemy", tuple(loc))
                 loc -= [2,2] # shift to center of kernel
-                for idx, weight in np.ndenumerate(sprite.kernel):
+                for idx, weight in np.ndenumerate(sprite.kernel): # places kernel on field
                     if loc[0]+idx[0]<MAP and loc[1]+idx[1]<MAP:
                         if field[loc[0]+idx[0],loc[1]+idx[1]] not in [1,255]:
                             new_field[loc[0]+idx[0],loc[1]+idx[1]] += weight
@@ -138,6 +145,7 @@ def place_obj(obj,field, display:pygame.Surface = None):
             return new_field, sprite
 
 def put_text(win, display_surface):
+    # places game winning or losing text on screen
     font = pygame.font.Font(pygame.font.match_font('microsoftsansserif'),32)
     if win:
         text = font.render('YOU WIN!', True, (0,0,0), (0,255,0))
@@ -156,50 +164,47 @@ def main():
     display_surface = pygame.display.set_mode((MAP*SIZE, MAP*SIZE))
     game_surface = pygame.Surface((MAP*SIZE,MAP*SIZE),pygame.SRCALPHA)
     fc = FieldCreator(game_surface, False)
-    field = fc.createField(0.2, 64)
+    field = fc.createField(0.2, MAP) # creates a 64x64 grid with 20% fill
     running = True
-    goal_field, goal_loc = place_obj('goal', field, game_surface)
+    goal_field, goal_loc = place_obj('goal', field, game_surface) # place goal
     hero_group = pygame.sprite.GroupSingle()
     enemy_list = pygame.sprite.Group()
-    game_field, hero = place_obj('hero', goal_field)
+    game_field, hero = place_obj('hero', goal_field) # place hero
     hero.goal_loc = goal_loc
     hero_group.add(hero)
     # cv2.namedWindow('field', cv2.WINDOW_NORMAL)
     # cv2.resizeWindow('field', 640,640)
     
-    for i in range(10):
+    for i in range(10): # places 10 enemies
         game_field, enemy = place_obj('enemy', game_field)
         enemy_list.add(enemy)
 
     hero.path_find(game_field)
     hero_loc = hero.map_loc
-    path_surface = hero.draw_path(hero_loc)
+    path_surface = hero.draw_path(hero_loc) # once path is found, draw path
     display_surface.blits([(game_surface,(0,0)),(path_surface,(0,0))])
     hero_group.draw(display_surface)
     enemy_list.draw(display_surface)
     pygame.display.flip()
     while running:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                running = False
         try:
-            path_surface = hero.update(enemy_list,game_field)
+            path_surface = hero.update(enemy_list,game_field) # move hero and update path
             display_surface.blits([(game_surface,(0,0)),(path_surface,(0,0))])
             for enemy in enemy_list:
-                game_field = enemy.update(hero_group,game_field)
+                game_field = enemy.update(hero_group,game_field) # move enemies and update game field in case of junk
             collisions = pygame.sprite.groupcollide(enemy_list, enemy_list, False, False)
-            for sprite1, collided in collisions.items():
+            for sprite1, collided in collisions.items(): # iterate through enemies to see if any collide together
                 for sprite2 in collided:
-                    if sprite1 != sprite2:
+                    if sprite1 != sprite2: # avoid self collisions
                         game_field=sprite1.teardown(game_field)
                         game_field=sprite2.teardown(game_field)
             hero_group.draw(display_surface)
             enemy_list.draw(display_surface)
-            if pygame.sprite.groupcollide(hero_group, enemy_list, False, False):
+            if pygame.sprite.groupcollide(hero_group, enemy_list, False, False): # check if enemy has killed hero
                 print("Game Over")
                 put_text(False,display_surface)
                 running=False
-            if hero.map_loc == goal_loc: 
+            if hero.map_loc == goal_loc: # check if hero has reached goal
                 put_text(True,display_surface)
                 running=False
                 
