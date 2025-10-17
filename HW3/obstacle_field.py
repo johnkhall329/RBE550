@@ -19,10 +19,12 @@ class FieldCreator():
         self.cell_size = cell_size
         self.field = np.zeros((map_size*self.cell_size,map_size*self.cell_size),dtype=np.uint8)
         self.placed = 0
-        self.open_spaces = [(0,0),(1,0),(0,1),(1,1),(map_size-1, map_size-2),(map_size-1, map_size-3)]
+        self.open_spaces = [(0,0),(1,0),(0,1),(1,1),(map_size-1, map_size-3),(map_size-1, map_size-4)]
         if truck: 
-            self.open_spaces.append((map_size-1, map_size-4))
+            self.open_spaces.append((map_size-1, map_size-5))
+            self.open_spaces.append((map_size-1, map_size-6))
             self.open_spaces.append((2,0))
+            self.open_spaces.append((3,0))
         while self.placed < coverage*(map_size**2): # adds tetronimos until it has reached coverage
             # random shape and location
             shape_type = np.random.randint(4)

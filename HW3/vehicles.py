@@ -3,7 +3,7 @@ import numpy as np
 import math
 
 CAR_COLOR = (255,0,0)
-PATH_COLOR = (255,150,0)
+PATH_COLOR = (150,150,0)
 
 class Vehicle():
     def __init__(self, type, img_size, origin):
@@ -30,13 +30,13 @@ class Vehicle():
             self.trailer_height = 4.5*scale
             self.trailer_dist = 5.0*scale
             self.x = origin[0]
-            self.y = origin[1] - self.wheelbase/2 + self.trailer_height/2 + self.trailer_dist
+            self.y = origin[1] - self.wheelbase/2
             self.trailer_heading = math.pi/2
             self.trailer_center = (self.x-(self.trailer_dist*math.cos(self.trailer_heading)), self.y-(self.trailer_dist*math.sin(self.trailer_heading)))     
         self.path_box_points = []
         self.heading = math.pi/2 # point along y axis
         self.speed = 0.0
-        self.box = cv2.RotatedRect((origin[0],origin[1]),((self.height),(self.width)),np.rad2deg(self.heading))
+        self.box = cv2.RotatedRect((origin[0],origin[1]),(self.height,self.width),np.rad2deg(self.heading))
         self.path_box_points.append(np.int32(self.box.points()))
         if self.type == 'truck': 
             self.trailer_box = cv2.RotatedRect((self.trailer_center[0],self.trailer_center[1]),((self.trailer_height),(self.trailer_width)),np.rad2deg(self.trailer_heading))
@@ -67,21 +67,18 @@ class Vehicle():
             self.path_box_points.append(np.int32(self.trailer_box.points()))
         
             
-    def draw(self,color_field, bin_field, path=True):
+    def draw(self,color_field_copy, color_field, path=False):
         pts = self.box.points().astype(np.int32).reshape((-1, 1, 2))
-        cv2.fillConvexPoly(color_field,pts,CAR_COLOR)
-        cv2.fillConvexPoly(bin_field,pts,(255,255,255))
+        cv2.fillConvexPoly(color_field_copy,pts,CAR_COLOR)
         center = (round(self.x+(math.cos(self.heading)*10)),round(self.y+(math.sin(self.heading)*10)))
-        cv2.arrowedLine(color_field,(round(self.x),round(self.y)),center,(0,0,255),2)
+        cv2.arrowedLine(color_field_copy,(round(self.x),round(self.y)),center,(0,0,255),2)
         if self.type == 'truck': 
-            pts = self.trailer_box.points().astype(np.int32).reshape((-1, 1, 2))
-            cv2.fillConvexPoly(color_field,pts,CAR_COLOR)
-            cv2.fillConvexPoly(bin_field,pts, (255,255,255))
-            cv2.line(color_field,(round(self.x),round(self.y)),(round(self.trailer_center[0]),round(self.trailer_center[1])),(0,0,0),2)
+            t_pts = self.trailer_box.points().astype(np.int32).reshape((-1, 1, 2))
+            cv2.fillConvexPoly(color_field_copy,t_pts,CAR_COLOR)
+            cv2.line(color_field_copy,(round(self.x),round(self.y)),(round(self.trailer_center[0]),round(self.trailer_center[1])),(0,0,0),2)
         
         if path:
-            for box in self.path_box_points:
-                cv2.drawContours(color_field,[box],0,PATH_COLOR,2)
+            cv2.drawContours(color_field,[pts],0,PATH_COLOR,1)
+            if self.type == 'truck': cv2.drawContours(color_field,[t_pts],0,PATH_COLOR,1)
         
-        return color_field, bin_field
-    
+        return color_field_copy, color_field
