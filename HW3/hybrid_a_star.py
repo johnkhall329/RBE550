@@ -3,224 +3,363 @@ from queue import PriorityQueue
 import math 
 import cv2
 import time
-import pygame
     
 from unconstrained import Unconstrained
-from reeds_shepp import reeds_shepp_path_planning as reeds_shepp
 from rsplan import path as rspath
 
-D_HEADING = np.pi/8
-RESOLUTION = 30
-TURNING_RADIUS = RESOLUTION/D_HEADING
-TURN_COST = 15
-BACKUP_COST = 10
+TURN_COST = 10
+BACKUP_COST = 25
+JACKKNIFE_COST = 20
 SHOW_ARROWS = True
 
+class HybridAStar():
+    def __init__(self, map, car, resolution, ang_resolution):
+        self.map = map
+        self.car = car
+        self.resolution = resolution
+        self.ang_resolution = ang_resolution
+        self.turning_r = resolution/ang_resolution #if car.type != 'delivery' else 1
+        
+    def hybrid_a_star_path(self, start_loc, goal_locs):
+        self.frontier = PriorityQueue()
+        self.came_from = {}
+        self.cost_so_far = {}
+        self.came_from[self.round_node(start_loc)] = None
+        self.cost_so_far[self.discretize(start_loc)] = 0
+        self.frontier.put((0,start_loc))
+        self.goal_locs = goal_locs
+        self.start_loc = start_loc
+        goal_discretized = [self.discretize(goal_loc) for goal_loc in self.goal_locs]
+        self.twod_astar_list = [Unconstrained((goal_disc[1],goal_disc[0]),dilate_map(self.map)) for goal_disc in goal_discretized] # create Unconstrained A* planners for each goal location
+        color_map = cv2.cvtColor(self.map,cv2.COLOR_GRAY2BGR)
+        # cv2.circle(color_map,(int(goal_locs[0][0]),int(goal_locs[0][1])),3, (0,255,0),-1)
+        # cv2.circle(color_map,(int(start_loc[0]),int(start_loc[1])),3, (255,0,0),-1)
+        itr = 0
+        init_dist = math.sqrt((goal_locs[0][0]-start_loc[0])**2 + (goal_locs[0][1]-start_loc[1])**2)
+        while not self.frontier.empty():
+            item = self.frontier.get()
+            curr_node = item[1]
+            curr_discretized = self.discretize(curr_node)
+            # cm = color_map.copy()
+
+            if curr_discretized in goal_discretized: # goal checking
+                collided, path = self.check_collision(curr_node, False) # determine if path collides at any point
+                if not collided: 
+                    # Get correct goal and use Reeds Shepp path to get to the exact location
+                    if self.car.type != 'truck':
+                        goal_idx = goal_discretized.index(curr_discretized)
+                        rs_goal = goal_locs[goal_idx]
+                        plan = rspath(curr_node[:3], rs_goal, self.turning_r, 0.0, self.resolution)
+                        rs_path = self.check_reeds_shepp(plan, curr_node)
+                    else:
+                        rs_path = []
+                    return path, rs_path
+                else:
+                    print('collision')
+                    continue
+            
+            collided, _ = self.check_collision(curr_node) # check if path to current node has collisions
+            if collided: 
+                # print('collided')
+                continue
+            
+            # Use the ratio of the distance left and initial distance as a probability for collsion checking and reeds shepp analytic expansion
+            curr_dist = item[0]-self.cost_so_far[curr_discretized]
+            prob = curr_dist/init_dist
+            if (prob < np.random.random()) and item[0] != 0 and self.car.type != 'truck':
+                plans = {}
+                for goal_loc in goal_locs:
+                    plan = rspath(curr_node[:3], goal_loc, self.turning_r, 0.0, self.resolution)
+                    plan_cost = sum(segment.length for segment in plan.segments)
+                    plans[plan_cost] = plan
+                for plan_id in sorted(plans.keys()):
+                    rs_path = self.check_reeds_shepp(plans[plan_id], curr_node)
+                if len(rs_path)!=0:
+                    print('successful rs')
+                    _, path = self.check_collision(curr_node, False)
+                    return path, rs_path
+                # pass
+            
+            # cv2.circle(color_map,(int(curr_node[0]),int(curr_node[1])),3, (0,0,255),-1)
+            for next_neighbor in self.find_neighbors(curr_node):
+                next_node, turn_cost = next_neighbor
+                if not (0<=curr_node[0]<self.map.shape[0] and 0<=curr_node[1]<self.map.shape[1]): continue # skip nodes generated outside of the map
+                new_cost = self.cost_so_far[curr_discretized] + turn_cost + self.resolution
+                next_discritized = self.discretize(next_node)
+                prev_cost = self.cost_so_far.get(next_discritized)       
+                
+                if prev_cost is None or new_cost < prev_cost:
+                    if self.came_from.get(self.round_node(curr_node)) is not None and self.round_node(self.came_from[self.round_node(curr_node)]) == self.round_node(next_node):
+                        # print('he')
+                        continue
+                    self.cost_so_far[next_discritized] = new_cost
+                    heuristic = self.get_heuristic(curr_node,curr_discretized)
+                    priority = new_cost + heuristic
+                    self.frontier.put((priority,next_node))
+                    self.came_from[self.round_node(next_node)] = curr_node
+                    # cv2.circle(color_map,(int(next_node[0]),int(next_node[1])),3, (0,0,255),-1)
+                # cv2.imshow('Progress', color_map)
+                # cv2.waitKey(1)
+            itr+=1
+        raise ValueError("Unable to find path")
+
+    def discretize(self, node):
+        """
+        Sorts a node into a grid based on resolution and turning angle
+        """
+        x = round(node[0]/self.resolution)
+        y = round(node[1]/self.resolution)
+        phi = node[2]
+        phi = normalize_angle(phi)
+        phi = round(phi/self.ang_resolution)
+        if self.car.type == 'truck':
+            tphi = node[3]
+            tphi = normalize_angle(tphi)
+            tphi = round(tphi/self.ang_resolution)
+            return (x,y,phi,tphi)
+        else:
+            return (x,y,phi)
+
+    def find_neighbors(self, node):
+        """
+        Finds the six neighbors of a node and calculates the additional cost to arrive at that node
+        """
+        if self.car.type != 'truck':
+            x,y,phi,dir = node
+        else:
+            x,y,phi,tphi,dir = node
+        
+        dist_to_goal = 1e9
+        for goal in self.goal_locs:
+            dist_to_goal = min(dist_to_goal, np.hypot(node[0]-goal[0], node[1]-goal[1]))
+        
+        if dist_to_goal < 100:
+            back_up_cost = BACKUP_COST/2
+        else:
+            back_up_cost = BACKUP_COST
+        # Punishes changing direction or turning angle. Double for changing from left-right and vice-versa
+        match dir:
+            case 'L':
+                cost = [0, TURN_COST, TURN_COST, back_up_cost, back_up_cost+TURN_COST, back_up_cost+TURN_COST]
+            case 'S':
+                cost = [TURN_COST, 0, TURN_COST, back_up_cost+TURN_COST, back_up_cost, back_up_cost+TURN_COST]
+            case 'R':
+                cost = [TURN_COST, TURN_COST, 0, back_up_cost+TURN_COST, back_up_cost+TURN_COST, back_up_cost]
+            case 'BL':
+                cost = [back_up_cost, back_up_cost+TURN_COST, back_up_cost+TURN_COST, 0, TURN_COST, TURN_COST]
+            case 'B':
+                cost = [back_up_cost+TURN_COST, back_up_cost, back_up_cost+TURN_COST, TURN_COST, 0, TURN_COST]
+            case 'BR':
+                cost = [back_up_cost+TURN_COST, back_up_cost+TURN_COST, back_up_cost, TURN_COST, TURN_COST, 0]
+        # straight
+        dx = self.resolution * math.cos(phi)
+        dy = self.resolution * math.sin(phi)
+        if self.car.type == 'truck':
+            dtphi = self.resolution/self.car.trailer_dist*math.sin(tphi-phi) # Kinematics for trailer heading
+            new_tphi = normalize_angle(tphi-dtphi)
+            cost[1] += JACKKNIFE_COST*abs(phi-new_tphi)
+            straight = (x+dx,y+dy,phi,new_tphi, 'S')
+        else:
+            straight = (x+dx,y+dy,phi,'S')
+          
+        # back
+        if self.car.type == 'truck':
+            dtphi = -self.resolution/self.car.trailer_dist*math.sin(tphi-phi)
+            new_tphi = normalize_angle(tphi-dtphi)
+            cost[4] += JACKKNIFE_COST*abs(phi-new_tphi)
+            back = (x-dx,y-dy,phi,new_tphi, 'B')
+        else:
+            back = (x-dx,y-dy,phi,'B')
+
+        # consts for turning
+        r = self.resolution/self.ang_resolution
+        d = 2 * r * math.sin(self.ang_resolution/2)
+
+        # left
+        dx = d * math.cos(phi - self.ang_resolution/2)
+        dy = d * math.sin(phi - self.ang_resolution/2)
+        
+        new_phi = normalize_angle(phi-self.ang_resolution)
+        if self.car.type == 'truck':
+            dtphi = self.resolution/self.car.trailer_dist*math.sin(tphi-(new_phi+phi)/2)
+            new_tphi = normalize_angle(tphi-dtphi)
+            cost[0] += JACKKNIFE_COST*abs(new_phi-new_tphi)
+            left = (x+dx,y+dy,new_phi,new_tphi,'L')
+        else:
+            left = (x+dx,y+dy,new_phi,'L')
+        
+        #back_right
+        dx = d * math.cos(np.pi + phi - self.ang_resolution/2)
+        dy = d * math.sin(np.pi + phi - self.ang_resolution/2)
+        
+        new_phi = normalize_angle(phi-self.ang_resolution)
+        if self.car.type == 'truck':
+            dtphi = -self.resolution/self.car.trailer_dist*math.sin(tphi-(new_phi+phi)/2)
+            new_tphi = normalize_angle(tphi-dtphi)
+            cost[5] += JACKKNIFE_COST*abs(new_phi-new_tphi)
+            back_right = (x+dx,y+dy,new_phi,new_tphi,'BR')
+        else:
+            back_right = (x+dx,y+dy,new_phi,'BR')
+        # right
+        dx = d * math.cos(phi + self.ang_resolution/2)
+        dy = d * math.sin(phi + self.ang_resolution/2)
+
+        new_phi = normalize_angle(phi+self.ang_resolution)
+        if self.car.type == 'truck':
+            dtphi = self.resolution/self.car.trailer_dist*math.sin(tphi-(new_phi+phi)/2)
+            new_tphi = normalize_angle(tphi-dtphi)
+            cost[2] += JACKKNIFE_COST*abs(new_phi-new_tphi)
+            right = (x+dx,y+dy,new_phi,new_tphi,'R')
+        else:
+            right = (x+dx,y+dy,new_phi,'R')
+        
+        #back_left
+        dx = d * math.cos(np.pi + phi + self.ang_resolution/2)
+        dy = d * math.sin(np.pi + phi + self.ang_resolution/2)
+        
+        new_phi = normalize_angle(phi+self.ang_resolution)
+        if self.car.type == 'truck':
+            dtphi = -self.resolution/self.car.trailer_dist*math.sin(tphi-(new_phi+phi)/2)
+            new_tphi = normalize_angle(tphi-dtphi)
+            cost[3] += JACKKNIFE_COST*abs(new_phi-new_tphi)
+            back_left = (x+dx,y+dy,new_phi,new_tphi,'BL')
+        else:
+            back_left = (x+dx,y+dy,new_phi,'BL')
+        
+        return [(left, cost[0]), (straight, cost[1]), (right, cost[2]), (back_left, cost[3]), (back, cost[4]), (back_right, cost[5])]
+
+    def get_heuristic(self, curr_state, curr_discretized):
+        h_list = []
+        for goal_idx, goal in enumerate(self.goal_locs): # For each goal location, get reeds-shepp path length and unconstrained cost
+            new_rspath = rspath(curr_state[:3], goal, self.turning_r, 0.0, self.resolution)
+            astar_h = self.twod_astar_list[goal_idx].get_unconstrained_path((curr_discretized[1], curr_discretized[0]),self.resolution)
+            h_list.append(max(sum(segment.length for segment in new_rspath.segments), astar_h)) # Take max of the two heuristics
+        return np.max(h_list)
+
+    def check_collision(self, node, individual = True):
+        """
+        From current node, trace path and determine if there are any collisions present.
+        This includes self collisions in the case of a truck.
+        
+        Will set nodes in path after a collision to a high cost under the assumption they can be reach
+        """
+        path_img = np.zeros_like(self.map)
+        collided=False
+        
+        if individual:
+            path = [node]
+        else:
+            path = []
+            # Reorder path from start to current node
+            while self.came_from[self.round_node(node)] is not None:
+                path.insert(0,node)
+                node = self.came_from[self.round_node(node)]
+                if len(path) > len(self.came_from): # Prevent circular time looping. Not handled very well at the moment
+                    print('circular?')
+                    return True, []
+        
+        if self.car.type == 'truck': tphi = self.start_loc[3]
+        
+        # Check each node in path to see if there is a collision
+        for i, node in enumerate(path):
+            # Draw rectangle of vehicle
+            car_loc = cv2.RotatedRect((node[0]+(math.cos(node[2])*self.car.wheelbase/2), node[1]+(math.sin(node[2]))*self.car.wheelbase/2),(self.car.height,self.car.width),np.rad2deg(node[2]))
+            pts = car_loc.points().astype(np.int32).reshape((-1, 1, 2))
+            if self.car.type == 'truck':
+                # If it is a truck, check for self collisions first
+                self_collision_truck = np.zeros_like(self.map)
+                self_collision_trailer = np.zeros_like(self.map)
+                dtphi = self.resolution/self.car.trailer_dist*math.sin(tphi-node[3]) if 'B' not in node[4] else -self.resolution/self.car.trailer_dist*math.sin(tphi-node[3])
+                tphi = normalize_angle(tphi-dtphi)
+                trailer_center = (node[0]-(self.car.trailer_dist*math.cos(tphi)), node[1]-(self.car.trailer_dist*math.sin(tphi)))
+                trailer_rect = cv2.RotatedRect(trailer_center, (self.car.trailer_height, self.car.trailer_width), np.rad2deg(tphi))
+                t_pts = trailer_rect.points().astype(np.int32).reshape((-1, 1, 2))
+                cv2.fillConvexPoly(self_collision_truck,pts,(255,255,255))
+                cv2.fillConvexPoly(self_collision_trailer,t_pts,(255,255,255))
+                if np.any(cv2.bitwise_and(self_collision_trailer, self_collision_truck)):
+                    collided = True
+                path_img = cv2.bitwise_or(path_img, cv2.bitwise_or(self_collision_trailer, self_collision_truck))
+            else:
+                cv2.fillConvexPoly(path_img,pts,(255,255,255))
+            mask = cv2.bitwise_and(self.map,path_img)
+            if np.any(mask): 
+                collided=True
+                # If there is a collsision, go through nodes after collision and assign high cost in case there is a safe way to reach them
+                for collided_node in path[i:]:   
+                    self.cost_so_far[self.discretize(collided_node)] = 1e9
+                break
+            node = self.came_from[self.round_node(node)]
+        # print(len(path))
+        return collided, path
+        
+    def check_reeds_shepp(self, plan, curr_node):
+        """
+        Almost exactly the same as check collision, except for with a path generated by reeds-shepp
+        Will also create the direction between each node for interpolation
+        """
+        path_img = np.zeros_like(self.map)
+        # path_img = objects.copy()
+        rspath = []
+        tphi = curr_node[3]
+        for waypoint in plan.waypoints():
+            car_loc = cv2.RotatedRect((waypoint.x+(math.cos(waypoint.yaw)*self.car.wheelbase/2), waypoint.y+(math.sin(waypoint.yaw))*self.car.wheelbase/2),(self.car.height,self.car.width),np.rad2deg(waypoint.yaw))
+            pts = car_loc.points().astype(np.int32).reshape((-1, 1, 2))
+            if self.car.type == 'truck':
+                self_collision_truck = np.zeros_like(self.map)
+                self_collision_trailer = np.zeros_like(self.map)
+                dtphi = self.resolution/self.car.trailer_dist*math.sin(tphi-waypoint.yaw) if waypoint.driving_direction == 1 else -self.resolution/self.car.trailer_dist*math.sin(tphi-waypoint.yaw)
+                tphi = normalize_angle(tphi-dtphi)
+                trailer_center = (waypoint.x-(self.car.trailer_dist*math.cos(tphi)), waypoint.y-(self.car.trailer_dist*math.sin(tphi)))
+                trailer_rect = cv2.RotatedRect(trailer_center, (self.car.trailer_height, self.car.trailer_width), np.rad2deg(tphi))
+                t_pts = trailer_rect.points().astype(np.int32).reshape((-1, 1, 2))
+                cv2.fillConvexPoly(self_collision_truck,pts,(255,255,255))
+                cv2.fillConvexPoly(self_collision_trailer,t_pts,(255,255,255))
+                if np.any(cv2.bitwise_and(self_collision_trailer, self_collision_truck)):
+                    return []
+                path_img = cv2.bitwise_or(path_img, cv2.bitwise_or(self_collision_trailer, self_collision_truck))
+            else:
+                cv2.fillConvexPoly(path_img,pts,(255,255,255))
+
+            mask = cv2.bitwise_and(self.map,path_img)
+            if np.any(mask):
+                return []
+            if waypoint.curvature == 0.0:
+                dir = 'S' if waypoint.driving_direction == 1 else 'B'
+            elif waypoint.curvature < 0:
+                dir = 'L' if waypoint.driving_direction == 1 else 'BL'
+            else:
+                dir = 'R' if waypoint.driving_direction == 1 else 'BR'
+            if self.car.type == 'truck':
+                rspath.append((waypoint.x, waypoint.y, waypoint.yaw, tphi, dir))
+            else:
+                rspath.append((waypoint.x, waypoint.y, waypoint.yaw, dir))
+        # last = rspath[-1]
+        # rspath[-1] = (last[0], last[1], last[2], 'STOP')
+        return rspath
+
+
+    # a node is a continous (x,y,phi) tuple
+    # phi is the heading angle in radians 
+    # x and y are in pixels, with (0,0) as top left corner
+    def round_node(self, node):
+        phi = node[2]
+        phi = normalize_angle(phi)
+        if self.car.type == 'truck':
+            tphi = node[3]
+            tphi = normalize_angle(tphi)
+            return (round(node[0]), round(node[1]), round(phi, 2), round(tphi, 2))
+        else:
+            return (round(node[0]), round(node[1]), round(phi, 2))
+        
+# create dilated map for 2D A*        
 def dilate_map(map):
-    
     dilute_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (25,25))
-    # erode_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3,3))
     diluted = cv2.dilate(map, dilute_kernel, iterations=2)
-    blurred = cv2.GaussianBlur(diluted, (45,45),0)
+    blurred = cv2.GaussianBlur(diluted, (35,35),0)
     return blurred
 
-# a node is a continous (x,y,phi) tuple
-# phi is the heading angle in radians 
-# x and y are in pixels, with (0,0) as top left corner
-
-def round_node(node):
-    phi = node[2]
+# Normalize angle between pi and -pi
+def normalize_angle(phi):
     phi = phi - 2*np.pi if phi > np.pi else phi
     phi = phi + 2*np.pi if phi < -np.pi else phi
-    return (round(node[0]), round(node[1]), round(phi, 2))
-    
-
-def discretize(node, resolution=RESOLUTION, turning_a=D_HEADING):
-    """
-    Sorts a node into a grid based on resolution and turning angle
-    resolution: size of each grid square
-    turning_a: angle increment for heading angle
-
-    returns as index of cell location and turning increment
-    e.g. (12,9,105 degrees) with resolution 10 and turning_a 15 degrees
-    returns (1,0,7)
-    cell is 1 in x direction (right), 0 in y direction (down),
-    and 7 increments of 15 degrees
-
-    """
-    x = round(node[0]/resolution)
-    y = round(node[1]/resolution)
-    phi = node[2]
-    phi = phi - 2*np.pi if phi > np.pi else phi
-    phi = phi + 2*np.pi if phi < -np.pi else phi
-    phi = round(phi/turning_a)
-    return (x,y,phi)
-
-def find_neighbors(node, distance=RESOLUTION, turning_a=D_HEADING):
-    x,y,phi,dir = node
-    
-    match dir:
-        case 'L':
-            cost = [0, TURN_COST, 2*TURN_COST, BACKUP_COST, BACKUP_COST+TURN_COST, BACKUP_COST+2*TURN_COST]
-        case 'S':
-            cost = [TURN_COST, 0, TURN_COST, BACKUP_COST+TURN_COST, BACKUP_COST, BACKUP_COST+TURN_COST]
-        case 'R':
-            cost = [2*TURN_COST, TURN_COST, 0, BACKUP_COST+2*TURN_COST, BACKUP_COST+TURN_COST, BACKUP_COST]
-        case 'BL':
-            cost = [BACKUP_COST, BACKUP_COST+TURN_COST, BACKUP_COST+2*TURN_COST, 0, TURN_COST, 2*TURN_COST]
-        case 'B':
-            cost = [BACKUP_COST+TURN_COST, BACKUP_COST, BACKUP_COST+TURN_COST, TURN_COST, 0, TURN_COST]
-        case 'BR':
-            cost = [BACKUP_COST+2*TURN_COST, BACKUP_COST+TURN_COST, BACKUP_COST, 2*TURN_COST, TURN_COST, 0]
-    # straight
-    dx = distance * math.cos(phi)
-    dy = distance * math.sin(phi)
-    straight = (x+dx,y+dy,phi,'S')  
-    # back
-    back = (x-dx,y-dy,phi,'B')
-
-    # consts for turning
-    r = distance/turning_a
-    d = 2 * r * math.sin(turning_a/2)
-    # d = RESOLUTION # for debugging
-
-    # left
-    dx = d * math.cos(phi - turning_a/2)
-    dy = d * math.sin(phi - turning_a/2)
-    left = (x+dx,y+dy,phi-turning_a,'L')
-    
-    #back_right
-    dx = d * math.cos(np.pi + phi - turning_a/2)
-    dy = d * math.sin(np.pi + phi - turning_a/2)
-    back_right = (x+dx,y+dy,phi-turning_a,'BR')
-
-    # right
-    dx = d * math.cos(phi + turning_a/2)
-    dy = d * math.sin(phi + turning_a/2)
-    right = (x+dx,y+dy,phi+turning_a,'R')
-    
-    #back_left
-    dx = d * math.cos(np.pi + phi + turning_a/2)
-    dy = d * math.sin(np.pi + phi + turning_a/2)
-    back_left = (x+dx,y+dy,phi+turning_a,'BL')
-    
-    return ((left, cost[0]), (straight, cost[1]), (right, cost[2]), (back_left, cost[3]), (back, cost[4]), (back_right, cost[5]))
-
-def get_heuristic(curr_state, curr_discritized, goals, two_d_astar_list: list[Unconstrained], step_size=RESOLUTION):
-    h_list = []
-    for goal in goals:
-        new_rspath = rspath(curr_state[:3], goal, TURNING_RADIUS, 0.0, step_size)
-        h_list.append(sum(segment.length for segment in new_rspath.segments))
-    for two_d_astar in two_d_astar_list:
-        h_list.append(two_d_astar.get_unconstrained_path((curr_discritized[1], curr_discritized[0]),step_size))
-    return np.max(h_list)
-
-def check_collision(objects, came_from, cost_so_far, node, car):
-    path_img = np.zeros_like(objects)
-    path = []
-    collided=False
-    init_node = node
-    while came_from[round_node(node)] is not None:
-        path.insert(0,node)
-        car_loc = cv2.RotatedRect((node[0]+(math.cos(-np.pi/2-node[2])*car.wheelbase/2), node[1]+(math.sin(-np.pi/2-node[2]))*car.wheelbase/2),(car.height,car.width),np.rad2deg(np.pi/2-node[2]))
-        pts = car_loc.points().astype(np.int32).reshape((-1, 1, 2))
-        cv2.fillConvexPoly(path_img,pts,(255,255,255))
-        mask = cv2.bitwise_and(objects,path_img)
-        if np.any(mask): 
-            collided=True
-            for collided_node in path:   
-                cost_so_far[discretize(collided_node)] = 1e9
-            break
-        node = came_from[round_node(node)]
-    # print(len(path))
-    return collided, path
-    
-def check_reeds_shepp(objects, plan, car):
-    path_img = np.zeros_like(objects)
-    rspath = []
-    for waypoint in plan.waypoints():
-        car_loc = cv2.RotatedRect((waypoint.x+(math.cos(-np.pi/2-waypoint.yaw)*car.wheelbase/2), waypoint.y+(math.sin(-np.pi/2-waypoint.yaw))*car.wheelbase/2),(car.height,car.width),np.rad2deg(np.pi/2-waypoint.yaw))
-        pts = car_loc.points().astype(np.int32).reshape((-1, 1, 2))
-        cv2.fillConvexPoly(path_img,pts,(255,255,255))
-        mask = cv2.bitwise_and(objects,path_img)
-        if np.any(mask):
-            return False
-        if waypoint.curvature == 0.0:
-            dir = 'S' if waypoint.driving_direction == 1 else 'B'
-        elif waypoint.curvature < 0:
-            dir = 'L' if waypoint.driving_direction == 1 else 'BL'
-        else:
-            dir = 'R' if waypoint.driving_direction == 1 else 'BR'
-        rspath.append((waypoint.x, waypoint.y, waypoint.yaw, dir))
-    # last = rspath[-1]
-    # rspath[-1] = (last[0], last[1], last[2], 'STOP')
-    return rspath
-    
-
-def hybrid_a_star_path(start_loc, goal_locs, map, car):
-    # car_img, diluted_img = get_bin_road(screen)
-    frontier = PriorityQueue()
-    came_from = {}
-    cost_so_far = {}
-    came_from[round_node(start_loc)] = None
-    cost_so_far[discretize(start_loc)] = 0
-    frontier.put((0,start_loc))
-    goal_discretized = [discretize(goal_loc) for goal_loc in goal_locs]
-    twodastar_list = [Unconstrained((goal_disc[1],goal_disc[0]),dilate_map(map)) for goal_disc in goal_discretized]
-    # color_map = cv2.cvtColor(map,cv2.COLOR_GRAY2BGR)
-    # cv2.circle(color_map,(int(goal_loc[0]),int(goal_loc[1])),3, (0,255,0),-1)
-    # cv2.circle(color_map,(int(start_loc[0]),int(start_loc[1])),3, (255,0,0),-1)
-    itr = 0
-    # collision_prob_const = 5
-    init_dist = math.sqrt((goal_locs[0][0]-start_loc[0])**2 + (goal_locs[0][1]-start_loc[1])**2)
-    while not frontier.empty():
-        item = frontier.get()
-        curr_node = item[1]
-        curr_discritized = discretize(curr_node)
-        # cm = color_map.copy()
-
-        if curr_discritized in goal_discretized: #will need to do correct goal checking
-            collided, path = check_collision(map, came_from, cost_so_far, curr_node, car)      
-            if not collided: 
-                return path, []
-            else:
-                print('collision')
-                continue
-        
-        # curr_dist  = math.sqrt((goal_loc[0]-curr_node[0])**2 + (goal_loc[1]-curr_node[1])**2)
-        curr_dist = item[0]-cost_so_far[curr_discritized]
-        prob = min(1,curr_dist/init_dist)
-        if (prob < np.random.random()) and item[0] != 0:
-            collided, path = check_collision(map, came_from, cost_so_far, curr_node, car)
-            if collided: continue
-            for goal_loc in goal_locs:
-                plan = rspath(curr_node[:3], goal_loc, TURNING_RADIUS, 0.0, RESOLUTION)
-                rs_path = check_reeds_shepp(map, plan, car)
-                if rs_path:
-                    print('successful rs')
-                    return path, rs_path
-        
-        # cv2.circle(color_map,(int(curr_node[0]),int(curr_node[1])),3, (0,0,255),-1)
-        for next_neighbor in find_neighbors(curr_node):
-            next_node, turn_cost = next_neighbor
-            if not (0<=curr_node[0]<map.shape[0] and 0<=curr_node[1]<map.shape[1]): continue
-            new_cost = cost_so_far[curr_discritized] + turn_cost + RESOLUTION
-            next_discritized = discretize(next_node)
-            prev_cost = cost_so_far.get(next_discritized)       
-            # if came_from.get(round_node(next_node)) is not None and round_node(came_from[round_node(next_node)]) == round_node(curr_node):
-            #     continue
-            
-            if prev_cost is None or new_cost < prev_cost:
-                if came_from.get(round_node(curr_node)) is not None and round_node(came_from[round_node(curr_node)]) == round_node(next_node):
-                    # print('he')
-                    continue
-                cost_so_far[next_discritized] = new_cost
-                heuristic = get_heuristic(curr_node,curr_discritized, goal_locs,twodastar_list)
-                priority = new_cost + heuristic
-                frontier.put((priority,next_node))
-                came_from[round_node(next_node)] = curr_node
-            #     cv2.circle(color_map,(int(next_node[0]),int(next_node[1])),3, (0,0,255),-1)
-            # cv2.imshow('Progress', color_map)
-            # cv2.waitKey(1)
-        itr+=1
-    raise ValueError("Unable to find path")
+    return phi

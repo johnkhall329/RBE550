@@ -9,7 +9,8 @@ class Vehicle():
     def __init__(self, type, img_size, origin):
         self.type = type
         self.img_size = img_size
-        scale = self.img_size/12/3
+        scale = self.img_size/12/3 # scale of pixels per meter
+        self.heading = origin[2]
         if self.type == 'delivery':
             self.width = 0.57*scale
             self.height = 0.7*scale
@@ -20,8 +21,8 @@ class Vehicle():
             self.width = 1.8*scale
             self.height = 5.2*scale
             self.wheelbase = 2.8*scale
-            self.x = origin[0]
-            self.y = origin[1] - self.wheelbase/2
+            self.x = origin[0] - math.cos(self.heading)*self.wheelbase/2
+            self.y = origin[1] - math.sin(self.heading)*self.wheelbase/2
         elif self.type == 'truck':
             self.width = 2.0*scale
             self.height = 5.4*scale
@@ -29,19 +30,20 @@ class Vehicle():
             self.trailer_width = 2.0*scale
             self.trailer_height = 4.5*scale
             self.trailer_dist = 5.0*scale
-            self.x = origin[0]
-            self.y = origin[1] - self.wheelbase/2
-            self.trailer_heading = math.pi/2
+            self.x = origin[0] - math.cos(self.heading)*self.wheelbase/2
+            self.y = origin[1] - math.sin(self.heading)*self.wheelbase/2
+            self.trailer_heading = origin[2]
             self.trailer_center = (self.x-(self.trailer_dist*math.cos(self.trailer_heading)), self.y-(self.trailer_dist*math.sin(self.trailer_heading)))     
         self.path_box_points = []
-        self.heading = math.pi/2 # point along y axis
         self.speed = 0.0
+        # create bounding box of vehicle
         self.box = cv2.RotatedRect((origin[0],origin[1]),(self.height,self.width),np.rad2deg(self.heading))
         self.path_box_points.append(np.int32(self.box.points()))
         if self.type == 'truck': 
             self.trailer_box = cv2.RotatedRect((self.trailer_center[0],self.trailer_center[1]),((self.trailer_height),(self.trailer_width)),np.rad2deg(self.trailer_heading))
             self.path_box_points.append(np.int32(self.trailer_box.points()))
                     
+    # Calculate vehicle kinematics based on control inputs (speed, steering angle/angular velocity) and time change                
     def update(self, U, dt):
         theta, v = U
         self.speed = v
@@ -52,7 +54,6 @@ class Vehicle():
         self.x += dx
         self.y += dy
         
-       
         # print(self.box_points)
         center = (self.x+(math.cos(self.heading)*self.wheelbase/2),self.y+(math.sin(self.heading)*self.wheelbase/2))
         self.box.center = center
@@ -67,6 +68,7 @@ class Vehicle():
             self.path_box_points.append(np.int32(self.trailer_box.points()))
         
             
+    # Draw current location of vehicle, optional to stamp location as well        
     def draw(self,color_field_copy, color_field, path=False):
         pts = self.box.points().astype(np.int32).reshape((-1, 1, 2))
         cv2.fillConvexPoly(color_field_copy,pts,CAR_COLOR)
