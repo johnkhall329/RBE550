@@ -32,7 +32,7 @@ def main():
     pygame.init()
     
     fc = FieldCreator()
-    car_type = DELIVERY
+    car_type = CAR
     bin_field, color_field, small_field = fc.createField(0.1, MAP, SIZE, car_type==TRUCK) # creates a 12x12 grid with 10% fill
     running = True
     
