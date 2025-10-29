@@ -6,24 +6,26 @@ from scipy.spatial import KDTree
 COLOR = (0,0,255)
 
 class Firetruck():
-    def __init__(self, start):
+    def __init__(self, start, tree):
         self.x, self.y, self.heading = start
         self.length = 4.9
         self.width = 2.2
         self.wheelbase = 3.0
         self.turning_r = 13.0
         self.v = 10.0
-        self.collision_r = math.sqrt((self.length/2)**2 + (self.width)**2)
+        self.collision_r = round(math.sqrt((self.length/2)**2 + (self.width)**2))
         self.box = cv2.RotatedRect((self.x,self.y),(self.length,self.width),np.rad2deg(self.heading))
+        self.tree = tree
         
-    def check_collision(self, tree:KDTree, pose=None):
+    def check_collision(self, pose=None):
+        # Returns true if there is a collision
         x,y,heading = [self.x, self.y, self.heading] if pose is None else pose
-        collided_idxs = tree.query_ball_point((x,y),self.collision_r)
+        collided_idxs = self.tree.query_ball_point((x,y),self.collision_r)
         if len(collided_idxs) > 0:
             collision_box = cv2.RotatedRect((x,y),(self.length, self.width),np.rad2deg(heading))
-            for obstacle in tree.data[collided_idxs]:
-                if cv2.pointPolygonTest(collision_box.points(), (obstacle[0], obstacle[1]), False) >= 0: return False
-        return True
+            for obstacle in self.tree.data[collided_idxs]:
+                if cv2.pointPolygonTest(collision_box.points(), (obstacle[0], obstacle[1]), False) >= 0: return True
+        return False
     
     def draw(self, field, conversion):
         self.box = cv2.RotatedRect((self.x,self.y),(self.length,self.width),np.rad2deg(self.heading))
