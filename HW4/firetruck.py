@@ -6,7 +6,7 @@ from scipy.spatial import KDTree
 COLOR = (0,0,255)
 
 class Firetruck():
-    def __init__(self, start, tree):
+    def __init__(self, start, tree:KDTree):
         self.x, self.y, self.heading = start
         self.length = 4.9
         self.width = 2.2
@@ -17,9 +17,11 @@ class Firetruck():
         self.box = cv2.RotatedRect((self.x,self.y),(self.length,self.width),np.rad2deg(self.heading))
         self.tree = tree
         
-    def check_collision(self, pose=None):
+    def check_collision(self, pose=None, axle = False):
         # Returns true if there is a collision
         x,y,heading = [self.x, self.y, self.heading] if pose is None else pose
+        if axle:
+            x,y,heading = self.get_center((x,y,heading))
         collided_idxs = self.tree.query_ball_point((x,y),self.collision_r)
         if len(collided_idxs) > 0:
             collision_box = cv2.RotatedRect((x,y),(self.length, self.width),np.rad2deg(heading))
@@ -38,5 +40,10 @@ class Firetruck():
         x,y,heading = [self.x, self.y, self.heading] if pose is None else pose
         axle_x = x-(math.cos(heading)*self.wheelbase/2)
         axle_y = y-(math.sin(heading)*self.wheelbase/2)
-        return (axle_x, axle_y)
+        return (axle_x, axle_y, heading)
         
+    def get_center(self, pose):
+        x,y,heading = pose
+        center_x = x+(math.cos(heading)*self.wheelbase/2)
+        center_y = y+(math.sin(heading)*self.wheelbase/2)
+        return (center_x, center_y, heading)

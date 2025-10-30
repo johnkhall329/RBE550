@@ -17,7 +17,10 @@ class FieldCreator():
         self.tet_list = [self.tet_I, self.tet_L, self.tet_S, self.tet_T]
         self.obstacle_states = {"intact": [], "burning": [], "extinguished": [], "burned": []}
         
-    def createField(self, coverage, map_size, cell_size):
+    def createField(self, coverage, map_size, cell_size, rng):
+        if rng is None:
+            self.rng = np.random.default_rng()
+        else: self.rng = np.random.default_rng(seed=rng)
         self.cell_size = cell_size
         self.field = np.ones((map_size*self.cell_size,map_size*self.cell_size,3),dtype=np.uint8)*255
         self.placed = 0
@@ -25,16 +28,16 @@ class FieldCreator():
         self.open_spaces = [(0, map_size//2), (map_size-1, map_size//2), (map_size-2, map_size//2)] # spaces for wumpus and truck start
         while self.placed < coverage*(map_size**2): # adds tetronimos until it has reached coverage
             # random shape and location
-            shape_type = np.random.randint(4)
-            loc = (np.random.randint(map_size),np.random.randint(map_size))
+            shape_type = self.rng.integers(4)
+            loc = (self.rng.integers(map_size),self.rng.integers(map_size))
             self.place_tet(shape_type, loc, map_size)
         return self.field, self.small_field, self.obstacle_states
         
     def place_tet(self, shape_type, loc, map_size):
         # take tetronimo and randomly mirror and rotate
         tet = self.tet_list[shape_type]
-        if np.random.randint(2): tet = tet.T
-        rot = np.random.randint(4)
+        if self.rng.integers(2): tet = tet.T
+        rot = self.rng.integers(4)
         tet = np.rot90(tet, rot)
 
         for idx, val in np.ndenumerate(tet): # if within the field, draw on PyGame display and add to matrix
