@@ -7,15 +7,19 @@ from rsplan import path as rspath
 
 
 # parameter
-N_SAMPLE = 250  # number of sample_points
+N_SAMPLE = 200  # number of sample_points
 N_KNN = 8  # number of edge from one sampled point
-MAX_EDGE_LEN = 50.0  # [m] Maximum edge length
+MAX_EDGE_LEN = 75.0  # [m] Maximum edge length
+NEW_SAMPLES = 25 # number of new samples to add if path isn't found
 
 class RoadMap():
     def __init__(self, vehicle, max_point, conversion):
         self.vehicle = vehicle
         self.max_point = max_point  
         self.conversion = conversion
+        self.path_attempts = 0
+        self.max_attempts = 5
+        self.step_size = 0.1
                      
     def build_road_map(self, start, rng=None):
         if rng is None:
@@ -64,7 +68,7 @@ class RoadMap():
                 if len(self.road_map[node]["neighbors"]) >= N_KNN or len(self.road_map[neighbor_node]["neighbors"]) >= N_KNN: break
                 
                 neighbor_axle = self.vehicle.get_axle_loc(neighbor_node)
-                plan = rspath(node_axle, neighbor_axle, self.vehicle.turning_r, 0.0, step_size=0.1)
+                plan = rspath(node_axle, neighbor_axle, self.vehicle.turning_r, 0.0, step_size=self.step_size)
                 cost = sum(abs(segment.length) for segment in plan.segments)
                 if cost > MAX_EDGE_LEN: break
                 
@@ -74,7 +78,7 @@ class RoadMap():
                     if self.vehicle.check_collision([waypoint.x, waypoint.y, waypoint.yaw], axle = True):
                         valid = False
                         break
-                    rs_path.append((waypoint.x, waypoint.y, waypoint.yaw))
+                    rs_path.append(self.vehicle.get_center((waypoint.x, waypoint.y, waypoint.yaw)))
                     
                 if valid:
                     self.edge_map[edge_i] = {'cost': cost, 'path': rs_path}
@@ -82,23 +86,41 @@ class RoadMap():
                     self.road_map[neighbor_node]["neighbors"][node] = edge_i
                     
                     edge_i += 1
-    
-    def update_road_map_missing(self, obstacle_tree:KDTree, grid_loc, min_dist):
+        
+        total_edges = 0
+        self.connectivity = np.zeros(self.sample_poses.shape[0])
+        for i,pose in enumerate(self.sample_poses):
+            node = round_node(pose)
+            if len(self.road_map[node]["neighbors"]) >= N_KNN: 
+                self.connectivity[i] = 0
+            else:
+                self.connectivity[i] = len(self.road_map[node]["neighbors"])
+                total_edges += len(self.road_map[node]["neighbors"])
+        self.connectivity = self.connectivity/total_edges
+        
+    def update_road_map_missing(self, obstacle_tree:KDTree, grid_locs, min_dist):
+        goal_xs = []
+        goal_ys = []
+        for grid_loc in grid_locs:
+            goal_ys.append(grid_loc[0])
+            goal_xs.append(grid_loc[1])
+        mean_loc = [np.mean(goal_xs), np.mean(goal_ys)]
         sample_x, sample_y, sample_heading = [], [], []
         found = False
         while not found:
-            tx = (self.rng.random() * self.max_point)
-            ty = (self.rng.random() * self.max_point)
+            tx = self.rng.normal(mean_loc[0]*self.conversion, min_dist)
+            ty = self.rng.normal(mean_loc[1]*self.conversion, min_dist)
             theading = (self.rng.random() * 2*np.pi) - np.pi
 
-            if not self.vehicle.check_collision([tx,ty,theading]) and tx>self.vehicle.collision_r and ty>self.vehicle.collision_r:
+            if not self.vehicle.check_collision([tx,ty,theading]) and tx>self.vehicle.collision_r and ty>self.vehicle.collision_r and tx<self.max_point and ty<self.max_point:
                 sample_x.append(tx)
                 sample_y.append(ty)
                 sample_heading.append(theading)
                 
             idxs = obstacle_tree.query_ball_point([tx,ty],min_dist)
             for obstacle_point in obstacle_tree.data[idxs]:
-                if obstacle_point[0]//self.conversion == grid_loc[1] and obstacle_point[1]//self.conversion == grid_loc[0]:
+                if int(obstacle_point[0]/self.conversion) in goal_xs and int(obstacle_point[1]/self.conversion) in goal_ys:
+                    found_grid_loc = (int(obstacle_point[1]/self.conversion),int(obstacle_point[1]/self.conversion))
                     found = True
                     found_point = (tx,ty,theading)
         
@@ -107,31 +129,79 @@ class RoadMap():
         self.kd_tree = KDTree(self.sample_poses[:,:2])
         
         self.add_edges(new_samples)      
-        return found_point 
+        return found_grid_loc, found_point
+    
+    def update_road_map_connectivity(self, n_samples, radius=MAX_EDGE_LEN/4):
+        sample_x, sample_y, sample_heading = [], [], []
+        sample_idxs = self.rng.choice(self.sample_poses.shape[0], size=n_samples, replace=False, p=self.connectivity)
+        for sample_i in sample_idxs:
+            prev_x, prev_y, _ = self.sample_poses[sample_i]
+            change=self.rng.random() * 2*np.pi
+            new_x = prev_x + radius*math.cos(change)
+            new_y = prev_y + radius*math.sin(change)
+            found = False
+            while not found:
+                tx = self.rng.normal(new_x, MAX_EDGE_LEN/3)
+                ty = self.rng.normal(new_y, MAX_EDGE_LEN/3)
+                theading = (self.rng.random() * 2*np.pi) - np.pi
+
+                if not self.vehicle.check_collision([tx,ty,theading]) and tx>self.vehicle.collision_r and ty>self.vehicle.collision_r and tx<self.max_point and ty<self.max_point:
+                    sample_x.append(tx)
+                    sample_y.append(ty)
+                    sample_heading.append(theading)
+                    found = True
+                    
+        new_samples = np.vstack((sample_x, sample_y, sample_heading)).T
+        self.sample_poses = np.vstack((self.sample_poses, new_samples))
+        self.kd_tree = KDTree(self.sample_poses[:,:2])
         
-    def prm_path(self, start, grid_goal, obstacle_tree:KDTree, radius):
-        closest_idxs = self.kd_tree.query_ball_point(((grid_goal[1]+0.5)*self.conversion,(grid_goal[0]+0.5)*self.conversion), 1.5*radius)
-        valid_points = []
-        for sampled_point in self.sample_poses[closest_idxs]:
-            idxs = obstacle_tree.query_ball_point(sampled_point[:2],radius)
-            for obstacle_point in obstacle_tree.data[idxs]:
-                if obstacle_point[0]//self.conversion == grid_goal[1] and obstacle_point[1]//self.conversion == grid_goal[0]:
-                    valid_points.append(sampled_point)
+        self.add_edges(new_samples)
+            
+        
+    def prm_path(self, start, grid_goals, obstacle_tree:KDTree, radius, updated=False):
+        valid_points = {}
+        for grid_goal in grid_goals:
+            closest_idxs = self.kd_tree.query_ball_point(((grid_goal[1]+0.5)*self.conversion,(grid_goal[0]+0.5)*self.conversion), 1.5*radius)
+            for sampled_point in self.sample_poses[closest_idxs]:
+                if sampled_point is None:
+                    print('huh')
+                idxs = obstacle_tree.query_ball_point(sampled_point[:2],radius)
+                for obstacle_point in obstacle_tree.data[idxs]:
+                    if obstacle_point[0]//self.conversion == grid_goal[1] and obstacle_point[1]//self.conversion == grid_goal[0]:
+                        if grid_goal not in valid_points:
+                            valid_points[grid_goal] = [sampled_point]
+                        else:
+                            valid_points[grid_goal].append(sampled_point)
                     
         if len(valid_points) == 0: 
             print("no close points")
-            valid_points = [self.update_road_map_missing(obstacle_tree, grid_goal, radius)]
-            print(valid_points)
+            grid_loc, new_point = self.update_road_map_missing(obstacle_tree, grid_goals, radius)
+            valid_points[grid_loc] = [new_point]
+            updated = True
             
-        try:
-            best_path = []
-            for goal in valid_points:
-                path = self.local_planner.find_prm_path(start, goal)
-                if len(best_path) == 0 or len(best_path) > len(path): best_path = path
-            return best_path
-        except ValueError:
-            print("unable to find path. will update map")
-        
+        best_path = []
+        best_path_len = 0
+        found_path = False
+        for grid_goal, poses in valid_points.items():
+            for goal in poses:
+                try:
+                    path, length = self.local_planner.find_prm_path(start, goal)
+                    if best_path_len == 0 or length < best_path_len: 
+                        best_path = path
+                        best_path_len = length
+                        found_path = True
+                        self.vehicle.goal = grid_goal
+                except ValueError:
+                    pass
+        if found_path:        
+            self.path_attempts = 0
+            return best_path, updated
+        else:
+            if self.path_attempts >= self.max_attempts: return None, False
+            self.path_attempts += 1
+            print("Updating map to hopefully improve connectivity")
+            self.update_road_map_connectivity(NEW_SAMPLES)
+            return self.prm_path(start, grid_goals, obstacle_tree, radius, True)
         
     
 class LocalPlanner():
@@ -172,14 +242,16 @@ class LocalPlanner():
     
     def format_path(self, came_from, goal_loc):
         path = []
+        length = 0
         node, edge_i = came_from[goal_loc]
         while node is not None: # appends nodes in path with goal as beginning
             edge = self.edge_map[edge_i]["path"]
-            if round_node(self.vehicle.get_center(edge[0])) != node: edge.reverse()
-            path = edge + path
+            if round_node(edge[0]) != node: edge.reverse()
+            path.insert(0,edge[1:])
+            length += self.edge_map[edge_i]["cost"]
             prev_point = came_from.get(node)
             node, edge_i = prev_point
-        return path
+        return path, length
     
 def round_node(node):
     phi = node[2]
