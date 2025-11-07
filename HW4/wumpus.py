@@ -14,6 +14,7 @@ class Wumpus():
         self.score = 0
         self.state = 'id'
         self.goal = None
+        self.time = 0.0
     
     
     def draw(self, field, conversion):
@@ -37,7 +38,7 @@ class Wumpus():
                 self.path = format_path(came_from, curr_node, self.conversion)
                 return self.path
             
-            # Iterates through closets 8 neighbors and see if they are within the field
+            # Iterates through closest 4 neighbors and see if they are within the field
             for next_node in find_neighbors(curr_node):
                 if 0<=next_node[0]<self.obstacle_field.shape[0] and 0<=next_node[1]<self.obstacle_field.shape[1] and self.obstacle_field[next_node] != 255:
                     new_cost = cost_so_far[curr_node] + self.obstacle_field[next_node] + 1

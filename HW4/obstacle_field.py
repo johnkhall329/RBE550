@@ -45,7 +45,7 @@ class FieldCreator():
         rot = self.rng.integers(4)
         tet = np.rot90(tet, rot)
         self.obstacle_groups.append([])
-        for idx, val in np.ndenumerate(tet): # if within the field, draw on PyGame display and add to matrix
+        for idx, val in np.ndenumerate(tet): # if within the field, draw on field and add to matrix
             pix_loc = (loc[0]+idx[0], loc[1]+idx[1])
             if val and pix_loc[0]<map_size and pix_loc[1]<map_size and pix_loc not in self.open_spaces and not self.small_field[pix_loc]:
                 self.small_field[pix_loc] = 255
@@ -57,21 +57,20 @@ class FieldCreator():
         self.total_obst += 1
                 
     def update_obstacle_state(self, loc, prev_state, new_state, group=False):
-        if group:
+        if group: # update entire group of obstacle locations
                 group_id = self.map_to_obstacle[loc]
                 for obst_loc in self.obstacle_groups[group_id]:
                     self.update_obstacle_state(obst_loc, prev_state, new_state, False)
                 return
         try:
-            if prev_state != 'burning':
+            if prev_state != 'burning': 
                 self.obstacle_states[prev_state].remove(loc)
             else:
-                self.obstacle_states[prev_state].pop(loc)
-                
+                self.obstacle_states[prev_state].pop(loc)      
         except (ValueError, KeyError) as e:
             print(f'Location: {loc} is not in {prev_state}')
             return
-        if new_state == "burning":
+        if new_state == "burning": # update state and color of obstacles
             self.obstacle_states[new_state][loc] = 0
             cv2.rectangle(self.field, (loc[1]*self.cell_size, loc[0]*self.cell_size), ((loc[1]+1)*self.cell_size-1, (loc[0]+1)*self.cell_size-1), BURNING, -1)
         elif new_state == "extinguished":
@@ -81,10 +80,11 @@ class FieldCreator():
             self.obstacle_states[new_state].append(loc)
             cv2.rectangle(self.field, (loc[1]*self.cell_size, loc[0]*self.cell_size), ((loc[1]+1)*self.cell_size-1, (loc[0]+1)*self.cell_size-1), BURNED, -1)
     
-    def update_burning(self):
+    def update_burning(self, time_scale, conversion):
         burned_groups = []
+        score = 0
         for loc, time in self.obstacle_states['burning'].items():
-            if time > 100:
+            if time > 10*time_scale: # update state to burned if over 10 seconds
                 group_id = self.map_to_obstacle[loc]
                 if group_id not in burned_groups: burned_groups.append(group_id)
             else:
@@ -92,21 +92,24 @@ class FieldCreator():
         for b_obst in burned_groups:
             b_loc = self.obstacle_groups[b_obst][0]
             self.update_obstacle_state(b_loc, 'burning', 'burned', True)
+            score +=1 # increase score of wumpus as well
 
-            close_intacts = []
+            close_intacts = [] # find possible close intact obstacles
             for intact_obst in self.obstacle_states['intact']:
-                if math.sqrt((intact_obst[0]-b_loc[0])**2 + (intact_obst[1]-b_loc[1])**2) <=12:
+                if math.sqrt((intact_obst[0]-b_loc[0])**2 + (intact_obst[1]-b_loc[1])**2) <=30*2/conversion:
                     close_intacts.append(intact_obst)
             
             if len(close_intacts) != 0:
                 intact_groups = []
                 for b_loc in self.obstacle_groups[b_obst]:
                     for close_intact in close_intacts:
-                        if math.sqrt((close_intact[0]-b_loc[0])**2 + (close_intact[1]-b_loc[1])**2) <=6:
+                        if math.sqrt((close_intact[0]-b_loc[0])**2 + (close_intact[1]-b_loc[1])**2) <= 30/conversion: # set to burning if less than 30m away
                             intact_id = self.map_to_obstacle[close_intact]
                             if intact_id not in intact_groups: 
                                 intact_groups.append(intact_id)
                                 self.update_obstacle_state(close_intact, 'intact', 'burning', True)
+                                score += 1                      
+        return score
                         
                     
         
