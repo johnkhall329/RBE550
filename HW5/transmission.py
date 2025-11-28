@@ -39,10 +39,10 @@ def load_from_file():
     """
     Load path from file
     """
-    path = np.load('path.npy')
-    with open("tree0.pkl", "rb") as f:
+    path = np.load('HW5/path.npy')
+    with open("HW5/tree0.pkl", "rb") as f:
         t0_e = pickle.load(f)
-    with open("tree1.pkl", "rb") as f2:
+    with open("HW5/tree1.pkl", "rb") as f2:
         t1_e = pickle.load(f2)
     return path, t0_e, t1_e
 
@@ -59,7 +59,7 @@ def display_path(tree_edges, start, goal, fig):
             if p2 is None: continue
             p1 = np.array(p1[:3]) + start_pos
             p2 = np.array(p2[:3]) + start_pos
-            vpl.arrow(p2, p1, width_scale=3, color=np.array([0,0,255]),fig=fig)
+            vpl.scatter([p1], radius=3,color=(0,0,255),fig=fig)
     fig.update()
     
 def animate_path(path, starting_pos, meshes):
@@ -70,7 +70,7 @@ def animate_path(path, starting_pos, meshes):
     main_mesh = meshes[1]
     
     vpl.mesh_plot(meshes[0], color=np.array([255,255,255,100]), fig=path_fig)
-    vpl.mesh_plot(meshes[2], color=(50,50,50), fig=path_fig)
+    vpl.mesh_plot(meshes[2], color=(255,255,255,100), fig=path_fig)
     prev_pos = np.eye(4)
     prev_pos[:3,3] = starting_pos
     prev_mesh = vpl.mesh_plot(main_mesh, color=(255,0,0), fig=path_fig)
@@ -85,11 +85,13 @@ def animate_path(path, starting_pos, meshes):
         path_fig.remove_plot(prev_mesh)
         main_mesh.transform(np.linalg.inv(prev_pos))
         main_mesh.transform(T)
+        vpl.scatter([T[:3,3]], radius=5, color=(0,0,0), fig = path_fig)
         prev_pos = T
         prev_mesh = vpl.mesh_plot(main_mesh, color=(255,0,0), fig=path_fig)
         path_fig.update()
         path_fig.show(block=False)
-        time.sleep(0.25)
+        time.sleep(0.05)
+    path_fig.show()
 
 if __name__ == '__main__':
     case_path = "HW5/case.stl"
@@ -109,5 +111,5 @@ if __name__ == '__main__':
     path_goal = x_goal[:3] + starting_pos
     display_path([t0_e, t1_e], starting_pos, path_goal, fig)
     
-    fig.show()
+    fig.show(block=False)
     animate_path(path, starting_pos, meshes)
